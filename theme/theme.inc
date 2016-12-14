@@ -115,6 +115,7 @@ function template_preprocess_islandora_solr_metadata_description(array &$variabl
     $solr_fields[$desc_field] = array(
       'display_label' => $description['description_label'],
       'value' => array(),
+      'description_data' => $description['description_data'],
     );
   }
 }
@@ -128,6 +129,38 @@ function template_process_islandora_solr_metadata_description(array &$variables)
   // XXX: Seems a little odd, yes... Was reusing the "description" value,
   // though.
   $variables['description'] = $variables['solr_fields'];
+  // Truncate the description value(s).
+  foreach ($variables['description'] as &$field) {
+    if (isset($field['description_data']['truncation'])) {
+      if ($field['description_data']['truncation']['max_length'] > 0) {
+        module_load_include('inc', 'islandora_solr', 'includes/utilities');
+        $field['value'] = array_filter($field['value']);
+        if ($field['description_data']['truncation']['truncation_type'] == 'whole_field_option') {
+          $updated_value[] = islandora_solr_truncate_field_display(
+            $field['value'],
+            $field['description_data']['truncation']['max_length'],
+            $field['description_data']['truncation']['ellipsis'],
+            $field['description_data']['truncation']['word_safe'],
+            $field['description_data']['truncation']['min_wordsafe_length'],
+            "\n"
+          );
+          $field['value'] = $updated_value;
+        }
+        else {
+          foreach ($field['value'] as $index => $value) {
+            $field['value'][$index] = islandora_solr_truncate_field_display(
+              (array) $value,
+              $field['description_data']['truncation']['max_length'],
+              $field['description_data']['truncation']['ellipsis'],
+              $field['description_data']['truncation']['word_safe'],
+              $field['description_data']['truncation']['min_wordsafe_length'],
+              " "
+            );
+          }
+        }
+      }
+    }
+  }
 }
 
 /**
@@ -152,6 +185,8 @@ function template_process_islandora_solr_metadata_description(array &$variables)
 function islandora_solr_metadata_query_fields($object, &$solr_fields) {
   module_load_include('inc', 'islandora_solr', 'includes/utilities');
   if (!empty($solr_fields)) {
+    global $user;
+
     $query_processor = new IslandoraSolrQueryProcessor();
     $query_processor->solrQuery = 'PID:"' . $object->id . '"';
     $query_processor->solrParams['fl'] = '*';
@@ -172,7 +207,26 @@ function islandora_solr_metadata_query_fields($object, &$solr_fields) {
           $field_config = $solr_fields[$solr_field] + array(
             'hyperlink' => 0,
             'formatter' => NULL,
+            'uri_replacement' => '',
           );
+          // Replace URI or PID with a configured field.
+          if (!empty($field_config['uri_replacement'])) {
+            module_load_include('inc', 'islandora', 'includes/utilities');
+            $pid = str_replace('info:fedora/', '', $value);
+            if (islandora_is_valid_pid($pid)) {
+              $relation_qp = new IslandoraSolrQueryProcessor();
+              $relation_qp->solrQuery = 'PID:"' . $pid . '"';
+              $relation_qp->solrParams['fl'] = "PID,{$field_config['uri_replacement']}";
+              $relation_qp->solrLimit = 1;
+              $relation_qp->executeQuery(FALSE);
+              if ($relation_qp->islandoraSolrResult['response']['numFound'] > 0) {
+                $relation_doc = $relation_qp->islandoraSolrResult['response']['objects'][0]['solr_doc'];
+                if (isset($relation_doc[$field_config['uri_replacement']])) {
+                  $value = $relation_doc[$field_config['uri_replacement']];
+                }
+              }
+            }
+          }
           if (($truncation = drupal_array_get_nested_value($field_config, array('truncation'))) && $truncation['max_length'] > 0 && (!isset($truncation['truncation_type']) || $truncation['truncation_type'] == 'separate_value_option')) {
             $value = truncate_utf8($value, $truncation['max_length'], $truncation['word_safe'], $truncation['ellipsis'], $truncation['min_wordsafe_length']);
             if ($value !== $original_value) {
@@ -192,6 +246,7 @@ function islandora_solr_metadata_query_fields($object, &$solr_fields) {
               ));
             }
           }
+
           if (is_callable($field_config['formatter'])) {
             $value = call_user_func($field_config['formatter'], $value);
           }
@@ -201,11 +256,18 @@ function islandora_solr_metadata_query_fields($object, &$solr_fields) {
               // Will get stripped out later.
               return;
             }
-            $solr_query = format_string('!field:"!value"', array(
+            $solr_query = format_string('!field:!value', array(
               '!field' => $solr_field,
-              '!value' => urlencode(islandora_solr_replace_slashes(islandora_solr_lesser_escape($original_value))),
+              '!value' => islandora_solr_facet_escape($original_value),
             ));
-            return l($value, "islandora/search/$solr_query");
+            return l($value, 'islandora/search', array(
+              "query" => array(
+                "type" => "dismax",
+                "f" => array(
+                  $solr_query,
+                ),
+              ),
+            ));
           }
           return $value;
         };
@@ -220,7 +282,9 @@ function islandora_solr_metadata_query_fields($object, &$solr_fields) {
 
       if (variable_get('islandora_solr_metadata_omit_empty_values', FALSE)) {
         $filter_function = function ($field_info) {
-          return !empty($field_info['value']);
+          // Remove all empty field values to determine if field is empty.
+          $filtered_values = array_filter($field_info['value']);
+          return !empty($filtered_values);
         };
         $filtered = array_filter($solr_fields, $filter_function);
         $solr_fields = $filtered;
@@ -236,13 +300,21 @@ function islandora_solr_metadata_query_fields($object, &$solr_fields) {
       // After values are omitted/dedupped filter down the displayed results.
       foreach ($solr_fields as &$field) {
         // Check if the field is configured to filter based on whole field.
-        if (($truncation = drupal_array_get_nested_value($field, array('truncation'))) && $truncation['max_length'] > 0 && $truncation['truncation_type'] == 'whole_field_option') {
+        if (($truncation = drupal_array_get_nested_value($field, array('truncation'))) && $truncation['max_length'] > 0 && isset($truncation['truncation_type']) && $truncation['truncation_type'] == 'whole_field_option') {
           // Keep the updated value stored in an array.
           $updated_value[] = islandora_solr_truncate_field_display($field['value'], $truncation['max_length'], $truncation['ellipsis'], $truncation['word_safe'], $truncation['min_wordsafe_length'], "\n");
           // Replace value with updated field display.
           $field['value'] = $updated_value;
         }
-        unset($field);
+
+        // Apply rules configurations for this field as configured
+        // on the metadata configuration page. Unset the field from
+        // the $solr_fields array to prevent it from being shown.
+        $permission = drupal_array_get_nested_value($field, array('permissions'));
+        if ($permission['enable_permissions'] && !array_intersect(array_keys($user->roles), $permission['permissions'])) {
+          // Permissions are being enforced and none of our roles are allowed...
+          unset($solr_fields[$field['solr_field']]);
+        }
       }
 
       uasort($solr_fields, 'drupal_sort_weight');
