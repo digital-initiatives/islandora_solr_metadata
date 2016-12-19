@@ -39,11 +39,11 @@
 </fieldset>
 <?php endif; ?>
 <?php else: ?>
-  <fieldset <?php $print ? print('class="islandora islandora-metadata"') : print('class="islandora islandora-metadata collapsible collapsed"');?>>
-    <legend><span class="fieldset-legend"><?php print t('Details'); ?></span></legend>
+  <!-- <fieldset <?php //$print ? print('class="islandora islandora-metadata"') : print('class="islandora islandora-metadata collapsible collapsed"');?>>
+    <legend><span class="fieldset-legend"><?php //print t('Details'); ?></span></legend>
     <?php //XXX: Hack in markup for message. ?>
-    <div class="messages--warning messages warning">
-      <?php print $not_found_message; ?>
+    <div class="messages-/-warning messages warning">
+      <?php //print $not_found_message; ?>
     </div>
-  </fieldset>
+  </fieldset> -->
 <?php endif; ?>
