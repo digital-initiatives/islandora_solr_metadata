@@ -1,5 +1,7 @@
 # Islandora Solr Metadata [![Build Status](https://travis-ci.org/Islandora/islandora_solr_metadata.png?branch=7.x)](https://travis-ci.org/Islandora/islandora_solr_metadata)
 
+[![Join the chat at https://gitter.im/utkdigitalinitiatives/islandora_solr_metadata](https://badges.gitter.im/utkdigitalinitiatives/islandora_solr_metadata.svg)](https://gitter.im/utkdigitalinitiatives/islandora_solr_metadata?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
+
 ## Introduction
 
 Provides an interface to construct configurations used for displaying metadata on Islandora objects.
